@@ -59,7 +59,7 @@ impl<T: Into<UdpMetadata>> From<T> for UdpSendMetadata {
         let value = value.into();
         Self {
             endpoint: Some(value.endpoint),
-            meta: value.meta
+            meta: value.meta,
         }
     }
 }
@@ -101,14 +101,12 @@ impl core::fmt::Display for BindError {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectError {
-    InvalidState,
     Unaddressable,
 }
 
 impl core::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ConnectError::InvalidState => write!(f, "invalid state"),
             ConnectError::Unaddressable => write!(f, "unaddressable"),
         }
     }
@@ -287,10 +285,6 @@ impl<'a> Socket<'a> {
         let endpoint = endpoint.into();
         if endpoint.port == 0 {
             return Err(ConnectError::Unaddressable);
-        }
-
-        if self.is_open() {
-            return Err(ConnectError::InvalidState);
         }
 
         self.default_remote = Some(endpoint);
