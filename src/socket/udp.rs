@@ -466,7 +466,7 @@ impl<'a> Socket<'a> {
     pub fn send_slice(
         &mut self,
         data: &[u8],
-        meta: impl Into<UdpMetadata>,
+        meta: impl Into<UdpSendMetadata>,
     ) -> Result<(), SendError> {
         self.send(data.len(), meta)?.copy_from_slice(data);
         Ok(())
