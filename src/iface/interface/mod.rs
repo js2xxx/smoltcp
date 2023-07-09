@@ -1252,7 +1252,6 @@ impl InterfaceInner {
         {
             if udp_socket.accepts(self, &ip_repr, &udp_repr) {
                 udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_payload);
-                return None;
             }
         }
 
