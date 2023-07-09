@@ -60,6 +60,23 @@ impl core::fmt::Display for BindError {
     }
 }
 
+/// Error returned by [`Socket::connect`]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConnectError {
+    InvalidState,
+    Unaddressable,
+}
+
+impl core::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ConnectError::InvalidState => write!(f, "invalid state"),
+            ConnectError::Unaddressable => write!(f, "unaddressable"),
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 impl std::error::Error for BindError {}
 
@@ -108,6 +125,7 @@ impl std::error::Error for RecvError {}
 #[derive(Debug)]
 pub struct Socket<'a> {
     endpoint: IpListenEndpoint,
+    default_remote: Option<IpEndpoint>,
     rx_buffer: PacketBuffer<'a>,
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
@@ -123,6 +141,7 @@ impl<'a> Socket<'a> {
     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
         Socket {
             endpoint: IpListenEndpoint::default(),
+            default_remote: None,
             rx_buffer,
             tx_buffer,
             hop_limit: None,
@@ -217,6 +236,27 @@ impl<'a> Socket<'a> {
         }
 
         self.endpoint = endpoint;
+
+        #[cfg(feature = "async")]
+        {
+            self.rx_waker.wake();
+            self.tx_waker.wake();
+        }
+
+        Ok(())
+    }
+
+    pub fn connect<T: Into<IpEndpoint>>(&mut self, endpoint: T) -> Result<(), ConnectError> {
+        let endpoint = endpoint.into();
+        if endpoint.port == 0 {
+            return Err(ConnectError::Unaddressable);
+        }
+
+        if self.is_open() {
+            return Err(ConnectError::InvalidState);
+        }
+
+        self.default_remote = Some(endpoint);
 
         #[cfg(feature = "async")]
         {
@@ -434,7 +474,13 @@ impl<'a> Socket<'a> {
         Ok((length, endpoint))
     }
 
-    pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
+    pub(crate) fn accepts(
+        &self,
+        cx: &mut Context,
+        ip_repr: &IpRepr,
+        repr: &UdpRepr,
+        restrict_remote: bool,
+    ) -> bool {
         if self.endpoint.port != repr.dst_port {
             return false;
         }
@@ -444,6 +490,14 @@ impl<'a> Socket<'a> {
             && !ip_repr.dst_addr().is_multicast()
         {
             return false;
+        }
+
+        if restrict_remote {
+            if let Some(remote) = self.default_remote {
+                if remote.addr != ip_repr.src_addr() || remote.port != repr.src_port {
+                    return false;
+                }
+            }
         }
 
         true
@@ -457,7 +511,12 @@ impl<'a> Socket<'a> {
         repr: &UdpRepr,
         payload: &[u8],
     ) {
-        debug_assert!(self.accepts(cx, ip_repr, repr));
+        debug_assert!(self.accepts(cx, ip_repr, repr, false));
+
+        self.default_remote = Some(IpEndpoint {
+            addr: ip_repr.src_addr(),
+            port: repr.src_port,
+        });
 
         let size = payload.len();
 
@@ -755,7 +814,7 @@ mod test {
         assert!(!socket.can_recv());
         assert_eq!(socket.recv(), Err(RecvError::Exhausted));
 
-        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
+        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR, false));
         socket.process(
             &mut cx,
             PacketMeta::default(),
@@ -765,7 +824,7 @@ mod test {
         );
         assert!(socket.can_recv());
 
-        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
+        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR, false));
         socket.process(
             &mut cx,
             PacketMeta::default(),
@@ -806,7 +865,7 @@ mod test {
 
         assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
 
-        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
+        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR, false));
         socket.process(
             &mut cx,
             PacketMeta::default(),
@@ -887,9 +946,9 @@ mod test {
         assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
 
         let mut udp_repr = REMOTE_UDP_REPR;
-        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &udp_repr));
+        assert!(socket.accepts(&mut cx, &REMOTE_IP_REPR, &udp_repr, false));
         udp_repr.dst_port += 1;
-        assert!(!socket.accepts(&mut cx, &REMOTE_IP_REPR, &udp_repr));
+        assert!(!socket.accepts(&mut cx, &REMOTE_IP_REPR, &udp_repr, false));
     }
 
     #[test]
@@ -898,11 +957,11 @@ mod test {
 
         let mut port_bound_socket = socket(buffer(1), buffer(0));
         assert_eq!(port_bound_socket.bind(LOCAL_PORT), Ok(()));
-        assert!(port_bound_socket.accepts(&mut cx, &BAD_IP_REPR, &REMOTE_UDP_REPR));
+        assert!(port_bound_socket.accepts(&mut cx, &BAD_IP_REPR, &REMOTE_UDP_REPR, false));
 
         let mut ip_bound_socket = socket(buffer(1), buffer(0));
         assert_eq!(ip_bound_socket.bind(LOCAL_END), Ok(()));
-        assert!(!ip_bound_socket.accepts(&mut cx, &BAD_IP_REPR, &REMOTE_UDP_REPR));
+        assert!(!ip_bound_socket.accepts(&mut cx, &BAD_IP_REPR, &REMOTE_UDP_REPR, false));
     }
 
     #[test]

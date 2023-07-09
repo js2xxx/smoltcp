@@ -1246,18 +1246,23 @@ impl InterfaceInner {
         ip_payload: &'frame [u8],
     ) -> Option<IpPacket<'frame>> {
         #[cfg(feature = "socket-udp")]
+        for udp_socket in sockets
+            .items_mut()
+            .filter_map(|i| udp::Socket::downcast_mut(&mut i.socket))
         {
-            let mut has_udp = false;
-            for udp_socket in sockets
-                .items_mut()
-                .filter_map(|i| udp::Socket::downcast_mut(&mut i.socket))
-            {
-                if udp_socket.accepts(self, &ip_repr, &udp_repr) {
-                    udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_payload);
-                    has_udp = true;
-                }
+            if udp_socket.accepts(self, &ip_repr, &udp_repr, true) {
+                udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_payload);
+                return None;
             }
-            if has_udp {
+        }
+
+        #[cfg(feature = "socket-udp")]
+        for udp_socket in sockets
+            .items_mut()
+            .filter_map(|i| udp::Socket::downcast_mut(&mut i.socket))
+        {
+            if udp_socket.accepts(self, &ip_repr, &udp_repr, false) {
+                udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_payload);
                 return None;
             }
         }
