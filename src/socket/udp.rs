@@ -37,6 +37,43 @@ impl core::fmt::Display for UdpMetadata {
     }
 }
 
+/// Metadata for a UDP packet ready to be sent.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub struct UdpSendMetadata {
+    pub endpoint: Option<IpEndpoint>,
+    pub meta: PacketMeta,
+}
+
+impl<T: Into<IpEndpoint>> From<Option<T>> for UdpSendMetadata {
+    fn from(value: Option<T>) -> Self {
+        Self {
+            endpoint: value.map(Into::into),
+            meta: PacketMeta::default(),
+        }
+    }
+}
+
+impl<T: Into<UdpMetadata>> From<T> for UdpSendMetadata {
+    fn from(value: T) -> Self {
+        let value = value.into();
+        Self {
+            endpoint: Some(value.endpoint),
+            meta: value.meta
+        }
+    }
+}
+
+impl core::fmt::Display for UdpSendMetadata {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        #[cfg(feature = "packetmeta-id")]
+        return write!(f, "{:?}, PacketID: {:?}", self.endpoint, self.meta);
+
+        #[cfg(not(feature = "packetmeta-id"))]
+        write!(f, "{:?}", self.endpoint)
+    }
+}
+
 /// A UDP packet metadata.
 pub type PacketMetadata = crate::storage::PacketMetadata<UdpMetadata>;
 
@@ -267,6 +304,10 @@ impl<'a> Socket<'a> {
         Ok(())
     }
 
+    pub fn remote_endpoint(&self) -> Option<IpEndpoint> {
+        self.default_remote
+    }
+
     /// Close the socket.
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
@@ -335,9 +376,18 @@ impl<'a> Socket<'a> {
     pub fn send(
         &mut self,
         size: usize,
-        meta: impl Into<UdpMetadata>,
+        meta: impl Into<UdpSendMetadata>,
     ) -> Result<&mut [u8], SendError> {
         let meta = meta.into();
+
+        let meta = UdpMetadata {
+            endpoint: meta
+                .endpoint
+                .or(self.default_remote)
+                .ok_or(SendError::Unaddressable)?,
+            meta: meta.meta,
+        };
+
         if self.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -370,13 +420,22 @@ impl<'a> Socket<'a> {
     pub fn send_with<F>(
         &mut self,
         max_size: usize,
-        meta: impl Into<UdpMetadata>,
+        meta: impl Into<UdpSendMetadata>,
         f: F,
     ) -> Result<usize, SendError>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
         let meta = meta.into();
+
+        let meta = UdpMetadata {
+            endpoint: meta
+                .endpoint
+                .or(self.default_remote)
+                .ok_or(SendError::Unaddressable)?,
+            meta: meta.meta,
+        };
+
         if self.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
         }
